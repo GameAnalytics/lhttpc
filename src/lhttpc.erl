@@ -362,6 +362,7 @@ request(Host, Port, Ssl, Path, Method, Hdrs, Body, Timeout, Options) ->
                     % sent to it. Very unlikely though
                     exit(Reason)
             after Timeout ->
+                    error_logger:error_msg("Timeout for httpc_client:~p", [Pid]),
                     kill_client(Pid)
             end
     end.

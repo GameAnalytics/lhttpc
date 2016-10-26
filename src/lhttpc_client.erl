@@ -108,7 +108,9 @@ execute(ReqId, From, Host, Port, Ssl, Path, Method, Hdrs, Body, Options) ->
     {ChunkedUpload, Request} = lhttpc_lib:format_request(Path, NormalizedMethod,
         Hdrs, Host, Port, Body, PartialUpload),
     Socket = case lhttpc_lb:checkout(Host, Port, Ssl, MaxConnections, ConnectionTimeout) of
-        {ok, S}   -> S; % Re-using HTTP/1.1 connections
+        {ok, S}   -> 
+                     error_logger:info_msg("Using socket:~p for reqid:~p path:~p", [S, ReqId, Path]),
+                     S; % Re-using HTTP/1.1 connections
         retry_later -> throw(retry_later);
         no_socket -> undefined % Opening a new HTTP/1.1 connection
     end,
