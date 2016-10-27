@@ -109,7 +109,6 @@ execute(ReqId, From, Host, Port, Ssl, Path, Method, Hdrs, Body, Options) ->
         Hdrs, Host, Port, Body, PartialUpload),
     Socket = case lhttpc_lb:checkout(Host, Port, Ssl, MaxConnections, ConnectionTimeout) of
         {ok, S}   -> 
-                     error_logger:info_msg("Using socket:~p for reqid:~p path:~p", [S, ReqId, Path]),
                      S; % Re-using HTTP/1.1 connections
         retry_later -> throw(retry_later);
         no_socket -> undefined % Opening a new HTTP/1.1 connection
@@ -163,10 +162,16 @@ send_request(#client_state{socket = undefined} = State) ->
             send_request(State#client_state{socket = Socket});
         {error, etimedout} ->
             % TCP stack decided to give up
+            error_logger:error_msg("Couldn't open socket due etimedout for request:~p",
+                                   [State#client_state.request]),
             throw(connect_timeout);
         {error, timeout} ->
+            error_logger:error_msg("Couldn't open socket due timeout for request:~p",
+                                   [State#client_state.request]),
             throw(connect_timeout);
         {error, Reason} ->
+            error_logger:error_msg("Couldn't open socket due ~p, for request:~p",
+                                   [Reason, State#client_state.request]),
             erlang:error(Reason)
     end;
 send_request(State) ->
@@ -180,6 +185,7 @@ send_request(State) ->
                 not State#client_state.partial_upload -> read_response(State)
             end;
         {error, closed} ->
+            error_logger:error_msg("HTTP request failed with reason closed:~p", [Request]),
             lhttpc_sock:close(Socket, Ssl),
             NewState = State#client_state{
                 socket = undefined,
@@ -187,6 +193,7 @@ send_request(State) ->
             },
             send_request(NewState);
         {error, Reason} ->
+            error_logger:error_msg("HTTP request failed with reason ~p:~p", [Reason, Request]),
             lhttpc_sock:close(Socket, Ssl),
             erlang:error(Reason)
     end.
