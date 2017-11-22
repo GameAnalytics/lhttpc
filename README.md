@@ -1,3 +1,9 @@
+# NOTICE
+**This project is not supported anymore.**
+It's still here just to support legacy projects that may have it as a dependency.
+It's operational (at least, for Erlang versions lower than R17)
+If you're looking for a HTTP client, we would recommend you to switch to [shotgun](https://github.com/inaka/shotgun) or [fusco](https://github.com/esl/fusco)
+
 Dependencies:
  * Erlang/OTP R13-B or newer
    * Application compiler to build, kernel, stdlib and ssl to run
@@ -10,6 +16,3 @@ Configuration: (environment variables)
                        kepp a HTTP/1.1 connection open. Changing this value
                        in runtime has no effect, this can however be done
                        through lhttpc_manager:update_connection_timeout/1.
-
-NOTE: THIS FORK OF LHTTPC IS ONLY RECOMMENDED IF YOU HAVE MANY REQUESTS TO DO TO A FEW RESTRICTED DOMAINS.
-It contains load-balancing mechanisms described in http://ferd.ca/rtb-where-erlang-blooms.html. It is not meant for general purpose use.

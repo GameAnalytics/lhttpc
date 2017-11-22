@@ -1,4 +1,3 @@
-%%% coding: latin-1
 %%% ----------------------------------------------------------------------------
 %%% Copyright (c) 2009, Erlang Training and Consulting Ltd.
 %%% All rights reserved.
@@ -25,93 +24,151 @@
 %%% ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 %%% ----------------------------------------------------------------------------
 
-%%% @author Oscar Hellström <oscar@hellstrom.st>
+%%------------------------------------------------------------------------------
+%%% @author Oscar HellstrÃ¶m <oscar@hellstrom.st>
 %%% @doc Main interface to the lightweight http client.
 %%% See {@link request/4}, {@link request/5} and {@link request/6} functions.
 %%% @end
+%%------------------------------------------------------------------------------
 -module(lhttpc).
 -behaviour(application).
 
-%% this is the API module; xref ignore all exports
--ignore_xref(
-   [start/0, stop/0, start/2, stop/1,
-    lb_status/0,
-    request/4, request/5, request/6, request/9,
-    send_body_part/2, send_body_part/3,
-    send_trailers/2, send_trailers/3,
-    get_body_part/1, get_body_part/2]).
-
--export(
-   [start/0, stop/0, start/2, stop/1,
-    lb_status/0,
-    request/4, request/5, request/6, request/9,
-    send_body_part/2, send_body_part/3,
-    send_trailers/2, send_trailers/3,
-    get_body_part/1, get_body_part/2]).
+-export([start/0, stop/0, start/2, stop/1,
+         request/4, request/5, request/6, request/9,
+         add_pool/1, add_pool/2, add_pool/3,
+         delete_pool/1,
+         send_body_part/2, send_body_part/3,
+         send_trailers/2, send_trailers/3,
+         get_body_part/1, get_body_part/2
+        ]).
 
 -include("lhttpc_types.hrl").
+-include("lhttpc.hrl").
 
--type result() :: {ok, {{pos_integer(), string()}, headers(), binary()}} |
-                  {error, atom()}.
+%%==============================================================================
+%% Exported functions
+%%==============================================================================
 
+%%------------------------------------------------------------------------------
 %% @hidden
--spec start(any(), any()) -> {ok, pid()}.
-start(_, Opts) when is_list(Opts) -> lhttpc_sup:start_link(Opts);
-start(_,_) -> lhttpc_sup:start_link().
+%%------------------------------------------------------------------------------
+-spec start(normal | {takeover, node()} | {failover, node()}, any()) ->
+    {ok, pid()}.
+start(_, _) ->
+    lhttpc_sup:start_link().
 
+%%------------------------------------------------------------------------------
 %% @hidden
+%%------------------------------------------------------------------------------
 -spec stop(any()) -> ok.
 stop(_) ->
     ok.
 
+
+%%------------------------------------------------------------------------------
 %% @spec () -> ok | {error, Reason}
 %%   Reason = term()
-%% @doc
-%% Start the application.
-%% This is a helper function that will call
-%% `application:ensure_all_started(lhttpc)' to
+%% @doc Start the application.
+%% This is a helper function that will call `application:start(lhttpc)' to
 %% allow the library to be started using the `-s' flag.
 %% For instance:
-%% `$ erl -s lhttpc'
+%% `$ erl -s crypto -s ssl -s lhttpc'
 %%
 %% For more info on possible return values the `application' module.
 %% @end
+%%------------------------------------------------------------------------------
 -spec start() -> ok | {error, any()}.
 start() ->
-    application:ensure_all_started(lhttpc).
+    application:start(lhttpc).
 
+%%------------------------------------------------------------------------------
 %% @spec () -> ok | {error, Reason}
 %%   Reason = term()
-%% @doc
-%% Stops the application.
+%% @doc Stops the application.
 %% This is a helper function that will call `application:stop(lhttpc)'.
 %%
 %% For more info on possible return values the `application' module.
 %% @end
+%%------------------------------------------------------------------------------
 -spec stop() -> ok | {error, any()}.
 stop() ->
     application:stop(lhttpc).
 
-%% @spec () -> [TaggedTuples].
-%%   TaggedTuples = [{Key,Value}]
-%%   Key = atom()
-%%   Value = term()
-%% @doc
-%% The load balancer will start an instance for each connection.
-%% This function returns information about each load balancer instance,
-%% in the form of a list of lists of tagged tuples.
+%%------------------------------------------------------------------------------
+%% @spec (Name) -> {ok, Pid} | {error, Reason}
+%%   Name = atom()
+%%   Pid = pid()
+%%   Reason = term()
+%% @doc Add a new named httpc_manager pool to the supervisor tree
 %% @end
--spec lb_status() -> lhttpc_lb:tagged_tuples().
-lb_status() ->
-    lhttpc_lb:status().
+%%------------------------------------------------------------------------------
+-spec add_pool(atom()) -> {ok, pid()} | {error, term()}.
+add_pool(Name) when is_atom(Name) ->
+    {ok, ConnTimeout} = application:get_env(lhttpc, connection_timeout),
+    {ok, PoolSize} = application:get_env(lhttpc, pool_size),
+    add_pool(Name,
+             ConnTimeout,
+             PoolSize).
 
+%%------------------------------------------------------------------------------
+%% @doc Add a new httpc_manager to the supervisor tree
+%% @end
+%%------------------------------------------------------------------------------
+-spec add_pool(atom(), non_neg_integer()) -> {ok, pid()} | {error, term()}.
+add_pool(Name, ConnTimeout) when is_atom(Name),
+                                 is_integer(ConnTimeout),
+                                 ConnTimeout > 0 ->
+    {ok, PoolSize} = application:get_env(lhttpc, pool_size),
+    add_pool(Name, ConnTimeout, PoolSize).
+
+%%------------------------------------------------------------------------------
+%% @doc Add a new httpc_manager to the supervisor tree
+%% @end
+%%------------------------------------------------------------------------------
+-spec add_pool(atom(), non_neg_integer(), poolsize()) ->
+          {ok, pid()} | {error, term()}.
+add_pool(Name, ConnTimeout, PoolSize) ->
+    ChildSpec = {Name,
+                 {lhttpc_manager, start_link, [[{name, Name},
+                                                {connection_timeout, ConnTimeout},
+                                                {pool_size, PoolSize}]]},
+                 permanent, 10000, worker, [lhttpc_manager]},
+    case supervisor:start_child(lhttpc_sup, ChildSpec) of
+        {error, {already_started, _Pid}} ->
+            {error, already_exists};
+        {error, Error} ->
+            {error, Error};
+        {ok, Pid} ->
+            {ok, Pid};
+        {ok, Pid, _Info} ->
+            {ok, Pid}
+    end.
+
+%%------------------------------------------------------------------------------
+%% @doc Delete a pool
+%% @end
+%%------------------------------------------------------------------------------
+-spec delete_pool(atom() | pid()) -> ok.
+delete_pool(PoolPid) when is_pid(PoolPid) ->
+    {registered_name, Name} = erlang:process_info(PoolPid, registered_name),
+    delete_pool(Name);
+delete_pool(PoolName) when is_atom(PoolName) ->
+    case supervisor:terminate_child(lhttpc_sup, PoolName) of
+        ok -> case supervisor:delete_child(lhttpc_sup, PoolName) of
+                  ok -> ok;
+                  {error, not_found} -> ok
+              end;
+        {error, Reason} -> {error, Reason}
+    end.
+
+%%------------------------------------------------------------------------------
 %% @spec (URL, Method, Hdrs, Timeout) -> Result
 %%   URL = string()
 %%   Method = string() | atom()
 %%   Hdrs = [{Header, Value}]
 %%   Header = string() | binary() | atom()
 %%   Value = string() | binary()
-%%   Timeout = timeout()
+%%   Timeout = integer() | infinity
 %%   Result = {ok, {{StatusCode, ReasonPhrase}, Hdrs, ResponseBody}}
 %%            | {error, Reason}
 %%   StatusCode = integer()
@@ -122,20 +179,22 @@ lb_status() ->
 %% Would be the same as calling {@link request/5} with an empty body,
 %% `request(URL, Method, Hdrs, [], Timeout)' or
 %% `request(URL, Method, Hdrs, <<>>, Timeout)'.
-%% @end
 %% @see request/9
--spec request(string(), string() | atom(), headers(), timeout()) -> result().
+%% @end
+%%------------------------------------------------------------------------------
+-spec request(string(), method(), headers(), pos_timeout()) -> result().
 request(URL, Method, Hdrs, Timeout) ->
     request(URL, Method, Hdrs, [], Timeout, []).
 
+%%------------------------------------------------------------------------------
 %% @spec (URL, Method, Hdrs, RequestBody, Timeout) -> Result
 %%   URL = string()
 %%   Method = string() | atom()
 %%   Hdrs = [{Header, Value}]
 %%   Header = string() | binary() | atom()
 %%   Value = string() | binary()
-%%   RequestBody = iolist()
-%%   Timeout = timeout()
+%%   RequestBody = iodata()
+%%   Timeout = integer() | infinity
 %%   Result = {ok, {{StatusCode, ReasonPhrase}, Hdrs, ResponseBody}}
 %%            | {error, Reason}
 %%   StatusCode = integer()
@@ -145,57 +204,79 @@ request(URL, Method, Hdrs, Timeout) ->
 %% @doc Sends a request with a body.
 %% Would be the same as calling {@link request/6} with no options,
 %% `request(URL, Method, Hdrs, Body, Timeout, [])'.
-%% @end
 %% @see request/9
--spec request(string(), string() | atom(), headers(), iolist(),
-        timeout()) -> result().
+%% @end
+%%------------------------------------------------------------------------------
+-spec request(string(), method(), headers(), iodata(), pos_timeout()) -> result().
 request(URL, Method, Hdrs, Body, Timeout) ->
     request(URL, Method, Hdrs, Body, Timeout, []).
 
+%%------------------------------------------------------------------------------
 %% @spec (URL, Method, Hdrs, RequestBody, Timeout, Options) -> Result
 %%   URL = string()
 %%   Method = string() | atom()
 %%   Hdrs = [{Header, Value}]
 %%   Header = string() | binary() | atom()
 %%   Value = string() | binary()
-%%   RequestBody = iolist()
-%%   Timeout = timeout()
+%%   RequestBody = iodata()
+%%   Timeout = integer() | infinity
 %%   Options = [Option]
 %%   Option = {connect_timeout, Milliseconds | infinity} |
-%%            {connection_timeout, Milliseconds | infinity} |
 %%            {connect_options, [ConnectOptions]} |
 %%            {send_retry, integer()} |
 %%            {partial_upload, WindowSize} |
-%%            {partial_download, PartialDownloadOptions}
+%%            {partial_download, PartialDownloadOptions} |
+%%            {proxy, ProxyUrl} |
+%%            {proxy_ssl_options, SslOptions} |
+%%            {pool, LhttcPool}
 %%   Milliseconds = integer()
 %%   ConnectOptions = term()
 %%   WindowSize = integer() | infinity
 %%   PartialDownloadOptions = [PartialDownloadOption]
 %%   PartialDowloadOption = {window_size, WindowSize} |
 %%                          {part_size, PartSize}
+%%   ProxyUrl = string()
+%%   SslOptions = [any()]
+%%   LhttcPool = pid() | atom()
 %%   PartSize = integer() | infinity
 %%   Result = {ok, {{StatusCode, ReasonPhrase}, Hdrs, ResponseBody}} |
 %%            {ok, UploadState} | {error, Reason}
 %%   StatusCode = integer()
 %%   ReasonPhrase = string()
-%%   ResponseBody = binary()
+%%   ResponseBody = binary() | pid() | undefined
 %%   Reason = connection_closed | connect_timeout | timeout
 %% @doc Sends a request with a body.
 %% Would be the same as calling <pre>
-%% {Host, Port, Path, Ssl} = lhttpc_lib:parse_url(URL),
+%% #lhttpc_url{host = Host, port = Port, path = Path, is_ssl = Ssl} = lhttpc_lib:parse_url(URL),
 %% request(Host, Port, Path, Ssl, Method, Hdrs, Body, Timeout, Options).
 %% </pre>
 %%
 %% `URL' is expected to be a valid URL:
 %% `scheme://host[:port][/path]'.
-%% @end
 %% @see request/9
--spec request(string(), string() | atom(), headers(), iolist(),
-        timeout(), [option()]) -> result().
+%% @end
+%%------------------------------------------------------------------------------
+-spec request(string(), method(), headers(), iodata(),
+              pos_timeout(), options()) -> result().
 request(URL, Method, Hdrs, Body, Timeout, Options) ->
-    {Host, Port, Path, Ssl} = lhttpc_lib:parse_url(URL),
-    request(Host, Port, Ssl, Path, Method, Hdrs, Body, Timeout, Options).
+    #lhttpc_url{
+         host = Host,
+         port = Port,
+         path = Path,
+         is_ssl = Ssl,
+         user = User,
+         password = Passwd
+        } = lhttpc_lib:parse_url(URL),
+    Headers = case User of
+        "" ->
+            Hdrs;
+        _ ->
+            Auth = "Basic " ++ binary_to_list(base64:encode(User ++ ":" ++ Passwd)),
+            lists:keystore("Authorization", 1, Hdrs, {"Authorization", Auth})
+    end,
+    request(Host, Port, Ssl, Path, Method, Headers, Body, Timeout, Options).
 
+%%------------------------------------------------------------------------------
 %% @spec (Host, Port, Ssl, Path, Method, Hdrs, RequestBody, Timeout, Options) ->
 %%                                                                        Result
 %%   Host = string()
@@ -206,20 +287,25 @@ request(URL, Method, Hdrs, Body, Timeout, Options) ->
 %%   Hdrs = [{Header, Value}]
 %%   Header = string() | binary() | atom()
 %%   Value = string() | binary()
-%%   RequestBody = iolist()
-%%   Timeout = timeout()
+%%   RequestBody = iodata()
+%%   Timeout = integer() | infinity
 %%   Options = [Option]
 %%   Option = {connect_timeout, Milliseconds | infinity} |
-%%            {connection_timeout, Milliseconds | infinity} |
 %%            {connect_options, [ConnectOptions]} |
 %%            {send_retry, integer()} |
 %%            {partial_upload, WindowSize} |
-%%            {partial_download, PartialDownloadOptions}
+%%            {partial_download, PartialDownloadOptions} |
+%%            {proxy, ProxyUrl} |
+%%            {proxy_ssl_options, SslOptions} |
+%%            {pool, LhttcPool}
 %%   Milliseconds = integer()
 %%   WindowSize = integer()
 %%   PartialDownloadOptions = [PartialDownloadOption]
 %%   PartialDowloadOption = {window_size, WindowSize} |
 %%                          {part_size, PartSize}
+%%   ProxyUrl = string()
+%%   SslOptions = [any()]
+%%   LhttcPool = pid() | atom()
 %%   PartSize = integer() | infinity
 %%   Result = {ok, {{StatusCode, ReasonPhrase}, Hdrs, ResponseBody}}
 %%          | {error, Reason}
@@ -264,9 +350,6 @@ request(URL, Method, Hdrs, Body, Timeout, Options) ->
 %% client will also give up. The default value is infinity, which means that
 %% it will either give up when the TCP stack gives up, or when the overall
 %% request timeout is reached.
-%%
-%% `{connection_timeout, MilliSeconds}' specifies for how long the client
-%%  will try to keep a HTTP/1.1 connection open.
 %%
 %% `{connect_options, Options}' specifies options to pass to the socket at
 %% connect time. This makes it possible to specify both SSL options and
@@ -329,46 +412,39 @@ request(URL, Method, Hdrs, Body, Timeout, Options) ->
 %% `undefined'. The functions {@link get_body_part/1} and
 %% {@link get_body_part/2} can be used to read body parts in the calling
 %% process.
+%%
+%% `{proxy, ProxyUrl}' if this option is specified, a proxy server is used as
+%% an intermediary for all communication with the destination server. The link
+%% to the proxy server is established with the HTTP CONNECT method (RFC2817).
+%% Example value: {proxy, "http://john:doe@myproxy.com:3128"}
+%%
+%% `{proxy_ssl_options, SslOptions}' this is a list of SSL options to use for
+%% the SSL session created after the proxy connection is established. For a
+%% list of all available options, please check OTP's ssl module manpage.
 %% @end
--spec request(string(), 1..65535, true | false, string(), atom() | string(),
-    headers(), iolist(), timeout(), [option()]) -> result().
+%%------------------------------------------------------------------------------
+-spec request(string(), port_num(), boolean(), string(), method(),
+    headers(), iodata(), pos_timeout(), options()) -> result().
 request(Host, Port, Ssl, Path, Method, Hdrs, Body, Timeout, Options) ->
-    ok = verify_options(Options),
-    ReqId = make_ref(),
-    case proplists:is_defined(stream_to, Options) of
-        true ->
-            StreamTo = proplists:get_value(stream_to, Options),
-            Args = [ReqId, StreamTo, Host, Port, Ssl, Path, Method, Hdrs, Body, Options],
-            Pid = spawn(lhttpc_client, request, Args),
-            spawn(fun() ->
-                R = kill_client_after(Pid, Timeout),
-                StreamTo ! {response, ReqId, Pid, R}
-            end),
-            {ReqId, Pid};
-        false ->
-            Args = [ReqId, self(), Host, Port, Ssl, Path, Method, Hdrs, Body, Options],
-            Pid = spawn_link(lhttpc_client, request, Args),
-            receive
-                {response, ReqId, Pid, R} ->
-                    R;
-                {exit, ReqId, Pid, Reason} ->
-                    % We would rather want to exit here, instead of letting the
-                    % linked client send us an exit signal, since this can be
-                    % caught by the caller.
-                    exit(Reason);
-                {'EXIT', Pid, Reason} ->
-                    % This could happen if the process we're running in taps exits
-                    % and the client process exits due to some exit signal being
-                    % sent to it. Very unlikely though
-                    exit(Reason)
-            after Timeout ->
-                    kill_client(Pid)
-            end
+    verify_options(Options),
+    Args = [self(), Host, Port, Ssl, Path, Method, Hdrs, Body, Options],
+    Pid = spawn_link(lhttpc_client, request, Args),
+    receive
+        {response, Pid, R} ->
+            R;
+        {'EXIT', Pid, Reason} ->
+            % This could happen if the process we're running in traps exits
+            % and the client process exits due to some exit signal being
+            % sent to it. Very unlikely though
+            {error, Reason}
+    after Timeout ->
+            kill_client(Pid)
     end.
 
+%%------------------------------------------------------------------------------
 %% @spec (UploadState :: UploadState, BodyPart :: BodyPart) -> Result
-%%   BodyPart = iolist() | binary()
-%%   Timeout = timeout()
+%%   BodyPart = iodata() | binary()
+%%   Timeout = integer() | infinity
 %%   Result = {error, Reason} | UploadState
 %%   Reason = connection_closed | connect_timeout | timeout
 %% @doc Sends a body part to an ongoing request when
@@ -378,14 +454,15 @@ request(Host, Port, Ssl, Path, Method, Hdrs, Body, Timeout, Options) ->
 %% Would be the same as calling
 %% `send_body_part(UploadState, BodyPart, infinity)'.
 %% @end
--spec send_body_part({pid(), window_size()}, iolist()) ->
-        {pid(), window_size()} | result().
+%%------------------------------------------------------------------------------
+-spec send_body_part(upload_state(), bodypart()) -> result().
 send_body_part({Pid, Window}, IoList) ->
     send_body_part({Pid, Window}, IoList, infinity).
 
+%%------------------------------------------------------------------------------
 %% @spec (UploadState :: UploadState, BodyPart :: BodyPart, Timeout) -> Result
-%%   BodyPart = iolist() | binary()
-%%   Timeout = timeout()
+%%   BodyPart = iodata() | binary()
+%%   Timeout = integer() | infinity
 %%   Result = {error, Reason} | UploadState
 %%   Reason = connection_closed | connect_timeout | timeout
 %% @doc Sends a body part to an ongoing request when
@@ -404,8 +481,8 @@ send_body_part({Pid, Window}, IoList) ->
 %% there is no response within `Timeout' milliseconds, the request is
 %% canceled and `{error, timeout}' is returned.
 %% @end
--spec send_body_part({pid(), window_size()}, iolist(), timeout()) ->
-        {ok, {pid(), window_size()}} | result().
+%%------------------------------------------------------------------------------
+-spec send_body_part(upload_state(), bodypart(), timeout()) -> result().
 send_body_part({Pid, _Window}, http_eob, Timeout) when is_pid(Pid) ->
     Pid ! {body_part, self(), http_eob},
     read_response(Pid, Timeout);
@@ -413,12 +490,10 @@ send_body_part({Pid, 0}, IoList, Timeout) when is_pid(Pid) ->
     receive
         {ack, Pid} ->
             send_body_part({Pid, 1}, IoList, Timeout);
-        {response, _ReqId, Pid, R} ->
+        {response, Pid, R} ->
             R;
-        {exit, _ReqId, Pid, Reason} ->
-            exit(Reason);
         {'EXIT', Pid, Reason} ->
-            exit(Reason)
+            {error, Reason}
     after Timeout ->
         kill_client(Pid)
     end;
@@ -428,16 +503,15 @@ send_body_part({Pid, Window}, IoList, _Timeout) when Window > 0, is_pid(Pid) ->
     receive
         {ack, Pid} ->
             {ok, {Pid, Window}};
-        {reponse, _ReqId, Pid, R} ->
+        {response, Pid, R} ->
             R;
-        {exit, _ReqId, Pid, Reason} ->
-            exit(Reason);
         {'EXIT', Pid, Reason} ->
-            exit(Reason)
+            {error, Reason}
     after 0 ->
         {ok, {Pid, lhttpc_lib:dec(Window)}}
     end.
 
+%%------------------------------------------------------------------------------
 %% @spec (UploadState :: UploadState, Trailers) -> Result
 %%   Header = string() | binary() | atom()
 %%   Value = string() | binary()
@@ -451,15 +525,17 @@ send_body_part({Pid, Window}, IoList, _Timeout) when Window > 0, is_pid(Pid) ->
 %% Would be the same as calling
 %% `send_trailers(UploadState, BodyPart, infinity)'.
 %% @end
+%%------------------------------------------------------------------------------
 -spec send_trailers({pid(), window_size()}, headers()) -> result().
 send_trailers({Pid, Window}, Trailers) ->
     send_trailers({Pid, Window}, Trailers, infinity).
 
+%%------------------------------------------------------------------------------
 %% @spec (UploadState :: UploadState, Trailers, Timeout) -> Result
 %%   Trailers = [{Header, Value}]
 %%   Header = string() | binary() | atom()
 %%   Value = string() | binary()
-%%   Timeout = timeout()
+%%   Timeout = integer() | infinity
 %%   Result = {ok, {{StatusCode, ReasonPhrase}, Hdrs, ResponseBody}}
 %%            | {error, Reason}
 %%   Reason = connection_closed | connect_timeout | timeout
@@ -475,13 +551,14 @@ send_trailers({Pid, Window}, Trailers) ->
 %% `Timeout' milliseconds the request is canceled and `{error, timeout}' is
 %% returned.
 %% @end
--spec send_trailers({pid(), window_size()}, headers(), timeout()) ->
-                       result().
+%%------------------------------------------------------------------------------
+-spec send_trailers({pid(), window_size()}, headers(), timeout()) -> result().
 send_trailers({Pid, _Window}, Trailers, Timeout)
         when is_list(Trailers), is_pid(Pid) ->
     Pid ! {trailers, self(), Trailers},
     read_response(Pid, Timeout).
 
+%%------------------------------------------------------------------------------
 %% @spec (HTTPClient :: pid()) -> Result
 %%   Result = {ok, BodyPart} | {ok, {http_eob, Trailers}}
 %%   BodyPart = binary()
@@ -494,12 +571,15 @@ send_trailers({Pid, _Window}, Trailers, Timeout)
 %% Would be the same as calling
 %% `get_body_part(HTTPClient, infinity)'.
 %% @end
--spec get_body_part(pid()) -> {ok, binary()} | {ok, {http_eob, headers()}}.
+%%------------------------------------------------------------------------------
+-spec get_body_part(pid()) -> {ok, binary()} |
+                       {ok, {http_eob, headers()}} | {error, term()}.
 get_body_part(Pid) ->
     get_body_part(Pid, infinity).
 
+%%------------------------------------------------------------------------------
 %% @spec (HTTPClient :: pid(), Timeout:: Timeout) -> Result
-%%   Timeout = timeout()
+%%   Timeout = integer() | infinity
 %%   Result = {ok, BodyPart} | {ok, {http_eob, Trailers}}
 %%   BodyPart = binary()
 %%   Trailers = [{Header, Value}]
@@ -510,125 +590,120 @@ get_body_part(Pid) ->
 %% `Timeout' is the timeout for reading the next body part in milliseconds.
 %% `http_eob' marks the end of the body. If there were Trailers in the
 %% response those are returned with `http_eob' as well.
+%% If it evers returns an error, no further calls to this function should
+%% be done.
 %% @end
--spec get_body_part(pid(), timeout()) ->
-        {ok, binary()} | {ok, {http_eob, headers()}}.
+%%------------------------------------------------------------------------------
+-spec get_body_part(pid(), timeout()) -> {ok, binary()} |
+                           {ok, {http_eob, headers()}} | {error, term()}.
 get_body_part(Pid, Timeout) ->
     receive
         {body_part, Pid, Bin} ->
             Pid ! {ack, self()},
             {ok, Bin};
         {http_eob, Pid, Trailers} ->
-            {ok, {http_eob, Trailers}}
+            {ok, {http_eob, Trailers}};
+        {error, Pid, Reason} ->
+            {error, Reason}
     after Timeout ->
         kill_client(Pid)
     end.
 
-%%% Internal functions
+%%==============================================================================
+%% Internal functions
+%%==============================================================================
 
+%%------------------------------------------------------------------------------
+%% @private
+%%------------------------------------------------------------------------------
 -spec read_response(pid(), timeout()) -> result().
 read_response(Pid, Timeout) ->
     receive
         {ack, Pid} ->
             read_response(Pid, Timeout);
-        {response, _ReqId, Pid, R} ->
+        {response, Pid, R} ->
             R;
-        {exit, _ReqId, Pid, Reason} ->
-            exit(Reason);
         {'EXIT', Pid, Reason} ->
-            exit(Reason)
+            {error, Reason}
     after Timeout ->
         kill_client(Pid)
     end.
 
+%%------------------------------------------------------------------------------
+%% @private
+%%------------------------------------------------------------------------------
+-spec kill_client(pid()) -> any() | {error, any()}.
 kill_client(Pid) ->
     Monitor = erlang:monitor(process, Pid),
     unlink(Pid), % or we'll kill ourself :O
     exit(Pid, timeout),
     receive
-        {response, _ReqId, Pid, R} ->
+        {response, Pid, R} ->
             erlang:demonitor(Monitor, [flush]),
             R;
-        {'DOWN', _, process, Pid, timeout} ->
-            {error, timeout};
         {'DOWN', _, process, Pid, Reason}  ->
-            erlang:error(Reason)
+            {error, Reason}
     end.
 
-kill_client_after(Pid, Timeout) ->
-    erlang:monitor(process, Pid),
-    receive
-        {'DOWN', _, process, Pid, _Reason} -> exit(normal)
-    after Timeout ->
-        catch unlink(Pid), % or we'll kill ourself :O
-        exit(Pid, timeout),
-        receive
-            {'DOWN', _, process, Pid, timeout} ->
-                {error, timeout};
-            {'DOWN', _, process, Pid, Reason}  ->
-                erlang:error(Reason)
-        after 1000 ->
-            exit(normal) % silent failure!
-        end
-    end.
-
-verify_options(Opts) ->
-    case verify_options(Opts, []) of
-        []   -> ok;
-        Errs -> error({bad_options,Errs})
-    end.
-
-verify_options([{send_retry, N} | Options], Errors)
-        when is_integer(N), N >= 0 ->
-    verify_options(Options, Errors);
-verify_options([{connect_timeout, infinity} | Options], Errors) ->
-    verify_options(Options, Errors);
-verify_options([{connect_timeout, MS} | Options], Errors)
+%%------------------------------------------------------------------------------
+%% @private
+%%------------------------------------------------------------------------------
+-spec verify_options(options()) -> ok.
+verify_options([{send_retry, N} | Options]) when is_integer(N), N >= 0 ->
+    verify_options(Options);
+verify_options([{connect_timeout, infinity} | Options]) ->
+    verify_options(Options);
+verify_options([{connect_timeout, MS} | Options])
         when is_integer(MS), MS >= 0 ->
-    verify_options(Options, Errors);
-verify_options([{connection_timeout, infinity} | Options], Errors) ->
-    verify_options(Options, Errors);
-verify_options([{connection_timeout, MS} | Options], Errors)
-        when is_integer(MS), MS >= 0 ->
-    verify_options(Options, Errors);
-verify_options([{max_connections, N} | Options], Errors)
-        when is_integer(N), N > 0 ->
-    verify_options(Options, Errors);
-verify_options([{partial_upload, WindowSize} | Options], Errors)
+    verify_options(Options);
+verify_options([{partial_upload, WindowSize} | Options])
         when is_integer(WindowSize), WindowSize >= 0 ->
-    verify_options(Options, Errors);
-verify_options([{partial_upload, infinity} | Options], Errors)  ->
-    verify_options(Options, Errors);
-verify_options([{partial_download, DownloadOptions} | Options], Errors)
+    verify_options(Options);
+verify_options([{partial_upload, infinity} | Options])  ->
+    verify_options(Options);
+verify_options([{partial_download, DownloadOptions} | Options])
         when is_list(DownloadOptions) ->
-    case verify_partial_download(DownloadOptions, []) of
-        [] ->
-            verify_options(Options, Errors);
-        OptionErrors ->
-            NewErrors = [{partial_download, OptionErrors} | Errors],
-            verify_options(Options, NewErrors)
-    end;
-verify_options([{connect_options, List} | Options], Errors)
-        when is_list(List) ->
-    verify_options(Options, Errors);
-verify_options([{stream_to, Pid} | Options], Errors) when is_pid(Pid) ->
-    verify_options(Options, Errors);
-verify_options([Option | Options], Errors) ->
-    verify_options(Options, [Option | Errors]);
-verify_options([], Errors) ->
-    Errors.
+    verify_partial_download(DownloadOptions),
+    verify_options(Options);
+verify_options([{connect_options, List} | Options]) when is_list(List) ->
+    verify_options(Options);
+verify_options([{proxy, List} | Options]) when is_list(List) ->
+    verify_options(Options);
+verify_options([{proxy_ssl_options, List} | Options]) when is_list(List) ->
+    verify_options(Options);
+verify_options([{pool, PidOrName} | Options])
+        when is_pid(PidOrName); is_atom(PidOrName) ->
+    verify_options(Options);
+verify_options([{pool_ensure, Bool} | Options])
+        when is_boolean(Bool) ->
+    verify_options(Options);
+verify_options([{pool_connection_timeout, Size} | Options])
+        when is_integer(Size) ->
+    verify_options(Options);
+verify_options([{pool_max_size, Size} | Options])
+        when is_integer(Size) orelse
+             Size =:= infinity->
+    verify_options(Options);
+verify_options([Option | _Rest]) ->
+    erlang:error({bad_option, Option});
+verify_options([]) ->
+    ok.
 
-verify_partial_download([{window_size, infinity} | Options], Errors)->
-    verify_partial_download(Options, Errors);
-verify_partial_download([{window_size, Size} | Options], Errors) when
+%%------------------------------------------------------------------------------
+%% @private
+%%------------------------------------------------------------------------------
+-spec verify_partial_download(options()) -> ok.
+verify_partial_download([{window_size, infinity} | Options])->
+    verify_partial_download(Options);
+verify_partial_download([{window_size, Size} | Options]) when
         is_integer(Size), Size >= 0 ->
-    verify_partial_download(Options, Errors);
-verify_partial_download([{part_size, Size} | Options], Errors) when
+    verify_partial_download(Options);
+verify_partial_download([{part_size, Size} | Options]) when
         is_integer(Size), Size >= 0 ->
-    verify_partial_download(Options, Errors);
-verify_partial_download([{part_size, infinity} | Options], Errors) ->
-    verify_partial_download(Options, Errors);
-verify_partial_download([Option | Options], Errors) ->
-    verify_partial_download(Options, [Option | Errors]);
-verify_partial_download([], Errors) ->
-    Errors.
+    verify_partial_download(Options);
+verify_partial_download([{part_size, infinity} | Options]) ->
+    verify_partial_download(Options);
+verify_partial_download([Option | _Options]) ->
+    erlang:error({bad_option, {partial_download, Option}});
+verify_partial_download([]) ->
+    ok.

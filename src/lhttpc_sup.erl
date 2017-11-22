@@ -1,8 +1,7 @@
-%%% coding: latin-1
 %%% ----------------------------------------------------------------------------
 %%% Copyright (c) 2009, Erlang Training and Consulting Ltd.
 %%% All rights reserved.
-%%% 
+%%%
 %%% Redistribution and use in source and binary forms, with or without
 %%% modification, are permitted provided that the following conditions are met:
 %%%    * Redistributions of source code must retain the above copyright
@@ -13,7 +12,7 @@
 %%%    * Neither the name of Erlang Training and Consulting Ltd. nor the
 %%%      names of its contributors may be used to endorse or promote products
 %%%      derived from this software without specific prior written permission.
-%%% 
+%%%
 %%% THIS SOFTWARE IS PROVIDED BY Erlang Training and Consulting Ltd. ''AS IS''
 %%% AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 %%% IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -25,41 +24,44 @@
 %%% ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 %%% ----------------------------------------------------------------------------
 
-%%% @author Oscar Hellström <oscar@hellstrom.st>
+%%------------------------------------------------------------------------------
+%%% @author Oscar HellstrÃ¶m <oscar@hellstrom.st>
 %%% @doc Top supervisor for the lhttpc application.
 %%% This is normally started by the application behaviour implemented in
 %%% {@link lhttpc}.
 %%% @end
+%%------------------------------------------------------------------------------
+
 -module(lhttpc_sup).
 -behaviour(supervisor).
 
--export([start_link/0, start_link/1]).
+%% Exported functions
+-export([start_link/0]).
+
+%% Callbacks
 -export([init/1]).
 
+%%------------------------------------------------------------------------------
 %% @spec () -> {ok, pid()} | {error, Reason}
 %% Reason = atom()
 %% @doc Starts and links to the supervisor.
 %% This is normally called from an application behaviour or from another
 %% supervisor.
 %% @end
+%%------------------------------------------------------------------------------
 -spec start_link() -> {ok, pid()} | {error, atom()}.
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-start_link(Args) ->
-    supervisor:start_link({local, ?MODULE}, ?MODULE, Args).
+%%==============================================================================
+%% Callbacks
+%%==============================================================================
 
+%%------------------------------------------------------------------------------
 %% @hidden
-init(Opts) ->
-    init_ets(Opts),
-    {ok, {{simple_one_for_one, 10, 1}, [
-        {load_balancer,
-         {lhttpc_lb, start_link, []},
-         transient, 10000, worker, [lhttpc_lb]}
-    ]}}.
-
-init_ets(Opts) ->
-    ETSOpts = proplists:get_value(ets, Opts, []),
-    %% Only option supported so far -- others do not really make sense at this point
-    ReadConc = {read_concurrency, proplists:get_value(read_concurrency, ETSOpts, false)},
-    ets:new(lhttpc_lb, [named_table, set, public, ReadConc]).
+%%------------------------------------------------------------------------------
+init(_) ->
+    LHTTPCManager = {lhttpc_manager, {lhttpc_manager, start_link,
+                     [[{name, lhttpc_manager}]]},
+                     permanent, 10000, worker, [lhttpc_manager]},
+    {ok, {{one_for_one, 10, 1}, [LHTTPCManager]}}.

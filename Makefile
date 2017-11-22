@@ -1,10 +1,13 @@
-REBAR := ./rebar
+.PHONY: all release compile test clean rel doc build-plt dialyzer
 
-.PHONY: all doc clean test eunit dialyze test
+PROJECT = lhttpc
+
+REBAR := ./rebar
+DIALYZER = dialyzer
+
+APPS = kernel stdlib sasl inets ssl public_key crypto compiler
 
 all: compile doc
-
-test: eunit xref dialyze
 
 compile:
 	$(REBAR) compile
@@ -12,21 +15,20 @@ compile:
 doc:
 	$(REBAR) doc
 
-eunit: compile
+test:	compile
 	$(REBAR) eunit
 
-xref: compile
-	$(REBAR) xref skip_deps=true
-
-.dialyzer_plt:
-	-dialyzer -nn --output_plt ${@} --build_plt \
-           --apps erts kernel stdlib crypto ssl public_key eunit
-
-dialyze: compile .dialyzer_plt
-	dialyzer ebin -nn --plt .dialyzer_plt
-
-release: all test
+release: all dialyze test
 	$(REBAR) release
 
 clean:
 	$(REBAR) clean
+
+build-plt: compile
+	@$(DIALYZER) --build_plt --output_plt .$(PROJECT).plt \
+		--apps $(APPS)
+
+dialyzer:
+	@$(DIALYZER) --fullpath  --src ./src \
+		--plt .$(PROJECT).plt --no_native \
+		-Werror_handling  #-Wrace_conditions

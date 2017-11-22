@@ -1,4 +1,3 @@
-%%% coding: latin-1
 %%% ----------------------------------------------------------------------------
 %%% Copyright (c) 2009, Erlang Training and Consulting Ltd.
 %%% All rights reserved.
@@ -25,25 +24,32 @@
 %%% ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 %%% ----------------------------------------------------------------------------
 
+%%------------------------------------------------------------------------------
 %%% @private
-%%% @author Oscar Hellström <oscar@hellstrom.st>
+%%% @author Oscar HellstrÃ¶m <oscar@hellstrom.st>
 %%% @doc
 %%% This module implements wrappers for socket operations.
 %%% Makes it possible to have the same interface to ssl and tcp sockets.
+%%------------------------------------------------------------------------------
 -module(lhttpc_sock).
 
--export([
-        connect/5,
-        recv/2,
-        recv/3,
-        send/3,
-        controlling_process/3,
-        setopts/3,
-        close/2
-    ]).
+-export([connect/5,
+         recv/2, recv/3,
+         send/3,
+         controlling_process/3,
+         setopts/3,
+         close/2
+        ]).
+
+-define(OTP_TCP_LIMIT, 67108864).
 
 -include("lhttpc_types.hrl").
 
+%%==============================================================================
+%% Exported functions
+%%==============================================================================
+
+%%------------------------------------------------------------------------------
 %% @spec (Host, Port, Options, Timeout, SslFlag) -> {ok, Socket} | {error, Reason}
 %%   Host = string() | ip_address()
 %%   Port = integer()
@@ -57,29 +63,15 @@
 %% Will use the `ssl' module if `SslFlag' is `true' and gen_tcp otherwise.
 %% `Options' are the normal `gen_tcp' or `ssl' Options.
 %% @end
+%%------------------------------------------------------------------------------
 -spec connect(host(), integer(), socket_options(), timeout(), boolean()) ->
     {ok, socket()} | {error, atom()}.
 connect(Host, Port, Options, Timeout, true) ->
-    % Avoid port leak with potential race condition in case of timeout
-    Flag = process_flag(trap_exit, true),
-    Res = ssl:connect(Host, Port, Options, Timeout),
-    receive
-          {'EXIT',_Pid,timeout} -> exit(timeout)
-        after 0 ->
-                process_flag(trap_exit, Flag),
-                Res
-        end;
+    ssl:connect(Host, Port, Options, Timeout);
 connect(Host, Port, Options, Timeout, false) ->
-    % Avoid port leak with potential race condition in case of timeout
-    Flag = process_flag(trap_exit, true),
-    Res = gen_tcp:connect(Host, Port, Options, Timeout),
-    receive
-          {'EXIT',_Pid,timeout} -> exit(timeout)
-        after 0 ->
-                process_flag(trap_exit, Flag),
-                Res
-        end.
+    gen_tcp:connect(Host, Port, Options, Timeout).
 
+%%------------------------------------------------------------------------------
 %% @spec (Socket, SslFlag) -> {ok, Data} | {error, Reason}
 %%   Socket = socket()
 %%   Length = integer()
@@ -91,6 +83,7 @@ connect(Host, Port, Options, Timeout, false) ->
 %% Will block untill data is available on the socket and return the first
 %% packet.
 %% @end
+%%------------------------------------------------------------------------------
 -spec recv(socket(), boolean()) ->
     {ok, any()} | {error, atom()} | {error, {http_error, string()}}.
 recv(Socket, true) ->
@@ -98,6 +91,7 @@ recv(Socket, true) ->
 recv(Socket, false) ->
     gen_tcp:recv(Socket, 0).
 
+%%------------------------------------------------------------------------------
 %% @spec (Socket, Length, SslFlag) -> {ok, Data} | {error, Reason}
 %%   Socket = socket()
 %%   Length = integer()
@@ -108,14 +102,39 @@ recv(Socket, false) ->
 %% Receives `Length' bytes from `Socket'.
 %% Will block untill `Length' bytes is available.
 %% @end
+%%------------------------------------------------------------------------------
 -spec recv(socket(), integer(), boolean()) -> {ok, any()} | {error, atom()}.
-recv(_, 0, _) ->
-    {ok, <<>>};
-recv(Socket, Length, true) ->
+recv(Socket, Length, SslFlag) ->
+    recv(Socket, Length, SslFlag, <<>>).
+-spec recv(socket(), integer(), boolean(), binary()) ->
+        {ok, any()} | {error, atom()}.
+recv(_, 0, _, Accum) ->
+    {ok, Accum};
+%% HACK: gen_tcp:recv limits transfers at 64M for some reason
+recv(Socket, Length, SslFlag, Accum) when (Length > ?OTP_TCP_LIMIT) ->
+    case recv_len(Socket, ?OTP_TCP_LIMIT, SslFlag) of
+        {ok, Part} ->
+            Accum0 = <<Accum/binary, Part/binary>>,
+            Length0 = Length-?OTP_TCP_LIMIT,
+            recv(Socket, Length0, SslFlag, Accum0);
+        Error ->
+            Error
+    end;
+recv(Socket, Length, SslFlag, Accum) ->
+    case recv_len(Socket, Length, SslFlag) of
+        {ok, Part} ->
+            Accum0 = <<Accum/binary, Part/binary>>,
+            {ok, Accum0};
+        Error ->
+            Error
+    end.
+-spec recv_len(socket(), integer(), boolean()) -> {ok, any()} | {error, atom()}.
+recv_len(Socket, Length, true) ->
     ssl:recv(Socket, Length);
-recv(Socket, Length, false) ->
+recv_len(Socket, Length, false) ->
     gen_tcp:recv(Socket, Length).
 
+%%------------------------------------------------------------------------------
 %% @spec (Socket, Data, SslFlag) -> ok | {error, Reason}
 %%   Socket = socket()
 %%   Data = iolist()
@@ -126,27 +145,33 @@ recv(Socket, Length, false) ->
 %% Will use the `ssl' module if `SslFlag' is set to `true', otherwise the
 %% gen_tcp module.
 %% @end
+%%------------------------------------------------------------------------------
 -spec send(socket(), iolist() | binary(), boolean()) -> ok | {error, atom()}.
 send(Socket, Request, true) ->
     ssl:send(Socket, Request);
 send(Socket, Request, false) ->
     gen_tcp:send(Socket, Request).
 
-%% @spec (Socket, Pid, SslFlag) -> ok | {error, Reason}
+%%------------------------------------------------------------------------------
+%% @spec (Socket, Process, SslFlag) -> ok | {error, Reason}
 %%   Socket = socket()
-%%   Pid = pid()
+%%   Process = pid() | atom()
 %%   SslFlag = boolean()
 %%   Reason = atom()
 %% @doc
 %% Sets the controlling proces for the `Socket'.
 %% @end
--spec controlling_process(socket(), pid(), boolean()) ->
+%%------------------------------------------------------------------------------
+-spec controlling_process(socket(), pid() | atom(), boolean()) ->
     ok | {error, atom()}.
+controlling_process(Socket, Controller, IsSsl) when is_atom(Controller) ->
+    controlling_process(Socket, whereis(Controller), IsSsl);
 controlling_process(Socket, Pid, true) ->
     ssl:controlling_process(Socket, Pid);
 controlling_process(Socket, Pid, false) ->
     gen_tcp:controlling_process(Socket, Pid).
 
+%%------------------------------------------------------------------------------
 %% @spec (Socket, Options, SslFlag) -> ok | {error, Reason}
 %%   Socket = socket()
 %%   Options = [atom() | {atom(), term()}]
@@ -155,13 +180,14 @@ controlling_process(Socket, Pid, false) ->
 %% @doc
 %% Sets options for a socket. Look in `inet:setopts/2' for more info.
 %% @end
--spec setopts(socket(), socket_options(), boolean()) ->
-    ok | {error, atom()}.
+%%------------------------------------------------------------------------------
+-spec setopts(socket(), socket_options(), boolean()) -> ok | {error, atom()}.
 setopts(Socket, Options, true) ->
     ssl:setopts(Socket, Options);
 setopts(Socket, Options, false) ->
     inet:setopts(Socket, Options).
 
+%%------------------------------------------------------------------------------
 %% @spec (Socket, SslFlag) -> ok | {error, Reason}
 %%   Socket = socket()
 %%   SslFlag = boolean()
@@ -169,24 +195,9 @@ setopts(Socket, Options, false) ->
 %% @doc
 %% Closes a socket.
 %% @end
+%%------------------------------------------------------------------------------
 -spec close(socket(), boolean()) -> ok | {error, atom()}.
 close(Socket, true) ->
-    % Avoid port leak with potential race condition in case of timeout
-    Flag = process_flag(trap_exit, true),
-    Res = ssl:close(Socket),
-    receive
-        {'EXIT',_Pid,timeout} -> exit(timeout)
-    after 0 ->
-            process_flag(trap_exit, Flag),
-            Res
-    end;
+    ssl:close(Socket);
 close(Socket, false) ->
-    % Avoid port leak with potential race condition in case of timeout
-    Flag = process_flag(trap_exit, true),
-    Res = gen_tcp:close(Socket),
-    receive
-        {'EXIT',_Pid,timeout} -> exit(timeout)
-    after 0 ->
-            process_flag(trap_exit, Flag),
-            Res
-    end.
+    gen_tcp:close(Socket).
